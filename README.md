@@ -1,6 +1,6 @@
 # GUIDE - owards Scalable Advising for Research Ideas
 
-## 🚀 Quick Start (3 Steps)
+## 🚀 Quick Start (4 Steps)
 
 ### 1. Setup Environment
 ```bash
@@ -8,16 +8,29 @@ bash setup_env.sh
 conda activate GUIDE
 ```
 
-### 2. Configure API Keys
+### 2. Download Research Databases
+Run this first to download the required research paper databases from Hugging Face:
+```bash
+python database/db_loader.py --action download
+```
+
+This downloads 4 databases (~500MB total):
+- **abstract_db** - Paper abstracts for similarity search
+- **contribution_db** - Paper contributions for similarity search  
+- **method_db** - Paper methods for similarity search
+- **experiment_db** - Paper experiments for similarity search
+
+**Note**: You need an OpenAI API key to use these databases. The download step just fetches the data - the API key is used later for embeddings.
+
+### 3. Configure API Keys
 Edit the API keys in `run_pipeline.py`:
 ```python
-# Line 48: Add your OpenAI API key
-'--openai_key', 'sk-proj-your-actual-openai-key-here',
+# Lines 30-31: Replace with your actual OpenAI API key
+'--openai_key', 'your-actual-openai-key-here',
 
-# Line 49: Add your Google API key  
+# Lines 48-50: Replace with your actual API keys
+'--openai_key', 'your-actual-openai-key-here',
 '--google_key', 'your-actual-google-key-here',
-
-# Line 50: Add your DeepInfra API key
 '--deepinfra_key', 'your-actual-deepinfra-key-here',
 ```
 

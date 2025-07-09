@@ -7,10 +7,9 @@ from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_community.chat_models import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
 import argparse
-from huggingface_hub import hf_hub_download
-import tempfile
+
 
 
 def parse_arguments():
@@ -30,30 +29,7 @@ def parse_arguments():
     
     return parser.parse_args()
 
-def download_hf_database(repo_id: str, local_dir: str = None):
-    if local_dir is None:
-        local_dir = tempfile.mkdtemp(prefix="hf_database_")
-    
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        repo_files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
-        
-        for file_path in repo_files:
-            hf_hub_download(
-                repo_id=repo_id,
-                filename=file_path,
-                repo_type="dataset",
-                local_dir=local_dir,
-                local_dir_use_symlinks=False
-            )
-        
-        print(f"Database downloaded to: {local_dir}")
-        return local_dir
-    except Exception as e:
-        print(f"Error downloading database from {repo_id}: {e}")
-        return None
-    
+
 
 def load_data(path: str) -> List[str]:
     paper_list = []
@@ -129,9 +105,6 @@ def user_prompt_gen(paper, database_map, args=None):
     for section in search_types:
         if section in section_db_map and section_db_map[section]["db_key"] in database_map:
             db = database_map[section_db_map[section]["db_key"]]
-            if db is None:
-                print(f"Warning: Database for {section} is not available, skipping...")
-                continue
             
             # Get the query text based on the field path
             field_path = section_db_map[section]["field_path"]
@@ -147,7 +120,7 @@ def user_prompt_gen(paper, database_map, args=None):
                 # Find related papers based on section content
                 similar_papers = db.similarity_search(
                     query_text, 
-                    filter={"year": {"$lte": 2024}}, 
+                    filter={"year": {"$lte": 2023}}, 
                     k=args.num_related
                 )
                 related_papers_by_section[section] = similar_papers
@@ -217,28 +190,25 @@ if __name__ == "__main__":
     embeddings = OpenAIEmbeddings(model="text-embedding-3-large", openai_api_key=openai_api_key)
     
     # Create a map of databases
-    repo_mappings = {
-        "abstract_db": "ResearchAgent-GUIDE/ICLR_abstract",
-        "contribution_db": "ResearchAgent-GUIDE/ICLR_contribution", 
-        "method_db": "ResearchAgent-GUIDE/ICLR_method",
-        "experiment_db": "ResearchAgent-GUIDE/ICLR_experiment"
+    database_map = {
+        "abstract_db": Chroma(
+            persist_directory="database/abstract_db/ICLR2016_2024_summary_year",
+            embedding_function=embeddings
+        ),
+        "contribution_db": Chroma(
+            persist_directory="database/contribution_db/ICLR2016_2024_contribution_year",
+            embedding_function=embeddings
+        ),
+        "method_db": Chroma(
+            persist_directory="database/method_db/ICLR2016_2024_method_year",
+            embedding_function=embeddings
+        ),
+        "experiment_db": Chroma(
+            persist_directory="database/experiment_db/ICLR2016_2024_experiments_year",
+            embedding_function=embeddings
+        )
     }
-    database_map = {}
-    for db_name, repo_id in repo_mappings.items():
-        print(f"Setting up {db_name}...")
-        db_path = download_hf_database(repo_id)
-        if db_path:
-            try:
-                database_map[db_name] = Chroma(
-                    persist_directory=db_path,
-                    embedding_function=embeddings
-                )
-                print(f"✓ {db_name} loaded successfully")
-            except Exception as e:
-                print(f"✗ Failed to load {db_name}: {e}")
-                database_map[db_name] = None
-        else:
-            database_map[db_name] = None
+    
 
     selected_papers = paper_list
     
@@ -284,7 +254,7 @@ if __name__ == "__main__":
         paper = selected_papers[i]
         print(f"Processing Paper {i+1}...")
 
-        user_message = user_message = user_prompt_gen(paper, database_map, args)
+        user_message = user_prompt_gen(paper, database_map, args)
         custom_id = f"ICLR2024-{i+1}"
         request = {"custom_id": custom_id, "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": system_message.content + '\n' + user_message.content}],"max_completion_tokens": 3000, "temperature": 0.6}}
         with open(args.output_path, 'a', encoding='utf-8') as f:
