@@ -1,4 +1,4 @@
-# GUIDE - owards Scalable Advising for Research Ideas
+# GUIDE - Towards Scalable Advising for Research Ideas
 
 ## 🚀 Quick Start (4 Steps)
 
