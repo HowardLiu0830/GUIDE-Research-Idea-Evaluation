@@ -119,7 +119,7 @@ python review_gen.py \
   --end_idx 10
 ```
 
-### BibTex
+## BibTex
 
 Please cite our work if you find the package useful 😄
 ```
