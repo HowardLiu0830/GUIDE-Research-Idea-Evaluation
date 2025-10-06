@@ -119,3 +119,15 @@ python review_gen.py \
   --end_idx 10
 ```
 
+### BibTex
+
+Please cite our work if you find the package useful 😄
+```
+@article{liu2025guide,
+  title={GUIDE: Towards Scalable Advising for Research Ideas},
+  author={Liu, Yaowenqi and Meng, Bingxu and Pan, Rui and Liu, Yuxing and Huang, Jerry and You, Jiaxuan and Zhang, Tong},
+  journal={arXiv preprint arXiv:2507.08870},
+  year={2025}
+}
+```
+
