@@ -2,32 +2,59 @@ import os
 import re
 import json
 from typing import Dict, List
-from langchain.schema import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain.chat_models import ChatOpenAI
 import argparse
+from rouge_score import rouge_scorer
 
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Generate paper reviews using LLM')
+    parser = argparse.ArgumentParser(description='Generate paper advising prompts using LLM')
     parser.add_argument('--openai_key', required=True, help='OpenAI API key')
     parser.add_argument('--paper_path', required=True, help='Path to paper data JSON')
     parser.add_argument('--output_path', required=True, help='Path for output JSON')
     parser.add_argument('--num_related', required=True, type=int, help='number of related papers to include per section')
     parser.add_argument('--start_idx', required=True, type=int, help='start index for paper processing')
     parser.add_argument('--end_idx', required=True, type=int, help='end index for paper processing')
-    
+    parser.add_argument('--year_threshold', type=int, default=2023,
+                        help='Only include related papers with year <= this value (default: 2023)')
+    parser.add_argument('--rouge_threshold', type=float, default=0.5,
+                        help='Drop retrieved papers whose abstract has ROUGE-L >= this score against the target abstract (default: 0.5)')
+
     # Replace multiple flags with comma-separated section lists
-    parser.add_argument('--paper_sections', type=str, default='', 
+    parser.add_argument('--paper_sections', type=str, default='',
                         help='Comma-separated list of paper sections to include (e.g., "introduction,method,conclusion")')
     parser.add_argument('--search_types', type=str, default='abstract,contribution,method,experiments',
                         help='Comma-separated list of sections to search by (e.g., "abstract,contribution,method,experiments")')
-    
+
     return parser.parse_args()
+
+
+def filter_similar_abstracts(target_abstract: str, retrieved_docs, rouge_threshold: float):
+    """Drop retrieved papers whose abstract is too similar to the target (ROUGE-L >= threshold)."""
+    scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
+    filtered_docs = []
+
+    print(f"Running ROUGE-L dedup, threshold: {rouge_threshold}")
+
+    for doc in retrieved_docs:
+        doc_abstract = doc.metadata.get('abstract', '')
+        if not doc_abstract:
+            print(f"Warning: '{doc.metadata.get('title', 'Unknown')[:50]}' has no abstract in metadata; keeping it")
+            filtered_docs.append(doc)
+            continue
+
+        score = scorer.score(target_abstract, doc_abstract)['rougeL'].fmeasure
+        if score < rouge_threshold:
+            filtered_docs.append(doc)
+        else:
+            print(f"Filtered (too similar): {doc.metadata.get('title', 'Unknown')[:50]}... (ROUGE-L: {score:.3f})")
+
+    print(f"ROUGE-L dedup: {len(retrieved_docs)} -> {len(filtered_docs)} papers")
+    return filtered_docs
 
 
 
@@ -100,12 +127,14 @@ def user_prompt_gen(paper, database_map, args=None):
     
     # Dictionary to store the related papers for each section
     related_papers_by_section = {}
-    
+    target_abstract = paper.get("abstract", "")
+
     # Query each database for the most similar papers
     for section in search_types:
         if section in section_db_map and section_db_map[section]["db_key"] in database_map:
             db = database_map[section_db_map[section]["db_key"]]
-            
+            print(f"\nProcessing {section} section...")
+
             # Get the query text based on the field path
             field_path = section_db_map[section]["field_path"]
             if field_path is None:
@@ -115,16 +144,25 @@ def user_prompt_gen(paper, database_map, args=None):
                 # Nested field (in summary dict)
                 summary = paper.get(field_path, {})
                 query_text = summary.get(section, "")
-            
+
             if query_text:
-                # Find related papers based on section content
+                # Over-retrieve so we have headroom for ROUGE-L dedup
                 similar_papers = db.similarity_search(
-                    query_text, 
-                    filter={"year": {"$lte": 2023}}, 
-                    k=args.num_related
+                    query_text,
+                    filter={"year": {"$lte": args.year_threshold}},
+                    k=args.num_related * 5
                 )
-                related_papers_by_section[section] = similar_papers
-                print(f"Found {len(similar_papers)} related papers based on {section}")
+                print(f"Initial retrieval: {len(similar_papers)} papers (year <= {args.year_threshold})")
+
+                # ROUGE-L dedup against the target abstract to drop near-duplicates
+                if target_abstract:
+                    filtered = filter_similar_abstracts(target_abstract, similar_papers, args.rouge_threshold)
+                else:
+                    print("Warning: target paper has no abstract, skipping ROUGE-L dedup")
+                    filtered = similar_papers
+
+                related_papers_by_section[section] = filtered[:args.num_related]
+                print(f"Kept {len(related_papers_by_section[section])} related papers for {section} section")
             else:
                 print(f"Warning: No {section} content found in the paper to use for similarity search")
     
@@ -157,24 +195,45 @@ def user_prompt_gen(paper, database_map, args=None):
                 prompt += f" *{section_type.capitalize()}*: {content}\n"
     
     prompt += f"""
-    Please analyze the paper according to the structured format provided in the system instructions.
+    Please analyze the paper according to the structured format specified in the system instructions.
 
-    **Return a valid JSON object following this format:**
+    Return a SINGLE valid JSON object with the following fields ONLY.
+    All fields except "summary" MUST be arrays of strings.
     ```json
     {{
-        "summary": "Overall, the idea ...(summarize the idea's different parts)",
-        "comparison_with_previous_work": "Compared to previous works, ...(compare the idea with previous works)",
-        "Novelty": "...(Evaluate the novelty/Originality of the idea)",
-        "Significance": "...(Evaluate the contribution/significance of the idea)",
-        "Soundness": "...(Evaluate the rigor/soundness of the idea)",
-        "strengths": "The strengths of the idea are ...(State the strengths of the idea in detail)",
-        "weaknesses": "The weaknesses of the idea are ...(State the weaknesses of the idea in detail)",
-        "Evaluation": "In conclusion, ... (Give an overall evaluation based on the above analysis)",
-        "Suggestion": "To improve the idea, the authors could ... (Provide constructive suggestions)"
+    "summary": "A concise paragraph summarizing the paper.",
+    "comparison_with_previous_work": [
+        "Title of Related Work: ..."
+    ],
+    "Novelty": ["..."],
+    "Significance": ["..."],
+    "Soundness": ["..."],
+    "strengths": ["..."],
+    "weaknesses": ["..."],
+    "Suggestion": ["..."]
     }}
     ```
-    **When mentioning a related work, please use the title of the related work.**
-    **STRICTLY return only a valid JSON object, without explanations, extra text, or formatting like Markdown.**
+    Rules:
+    - STRICTLY output a valid JSON object and nothing else.
+    - Do NOT include Markdown, explanations, or extra text.
+    - Do NOT add or remove keys.
+    - "comparison_with_previous_work" MUST contain EXACTLY 5 items.
+    - All other lists (Novelty, Significance, Soundness, strengths, weaknesses, Suggestion) MUST contain EXACTLY 4 items.
+    - Each item should be detailed and comprehensive (2 sentences per item minimum).
+    - Provide in-depth analysis with specific evidence, examples, and reasoning for each point.
+    - For "comparison_with_previous_work":
+        - Each item MUST reference the prior work by its paper title (do NOT include URLs).
+        - Each item MUST contain EXACTLY TWO sentences:
+            1) one sentence describing what the prior work does,
+            2) one sentence explaining the difference or relationship to the target paper.
+    - For "Novelty": Provide a BALANCED assessment that discusses BOTH the novel aspects AND the limitations in novelty. For each item, explicitly cover (a) what is genuinely new — specific techniques, formulations, or combinations not seen in prior work, AND (b) what is incremental, derivative, or already-explored. Do not only praise or only criticize; every advisor must surface both sides in detail.
+    - For "Significance": Provide a BALANCED assessment that discusses BOTH the potential impact AND the limits of significance. For each item, explicitly cover (a) why the problem/result matters — which communities benefit, what downstream applications become possible, what concrete examples of impact are plausible, AND (b) what caps or narrows the significance — niche scope, marginal gains over existing solutions, unclear adoption path, or limited generalizability. Do not only praise or only criticize; every item must contain both positive and negative analysis with concrete reasoning.
+    - For "Soundness": Provide a BALANCED assessment BASED ONLY ON WHAT THE SUMMARY REVEALS. Remember: you do NOT have access to the full method or experiment details — no equations, pseudocode, hyperparameters, tables, or numerical results. Therefore you MUST NOT critique (or praise) specifics you cannot see. For each item, explicitly cover (a) what the summary presents as well-grounded — e.g., the proposed approach is internally coherent with its stated motivation, the claimed experimental scope appears aligned with the claims, the chosen problem setting is appropriate, AND (b) what is unclear or questionable AT THE SUMMARY LEVEL — e.g., the summary leaves key design choices unexplained, the link between claim and stated evidence is weak, the described experimental scope seems too narrow to support the claims, or the motivation does not obviously justify the proposed approach. Do not only praise or only criticize; every item must surface both strengths and concerns in detail, and every concern must be framed as a question about what the summary reveals, not as a factual accusation about hidden details.
+    - For "strengths": Elaborate on each strength with specific evidence from the paper and its significance.
+    - For "weaknesses": Clearly explain each weakness with specific examples and suggestions for improvement.
+    - For "Suggestion": Give actionable, specific recommendations with detailed explanations of why and how to implement them.
+    - When mentioning related work, ALWAYS use the paper title (no URLs).
+
     """
 
     return HumanMessage(content=prompt)
@@ -213,41 +272,44 @@ if __name__ == "__main__":
     selected_papers = paper_list
     
     response_schemas = [
-        ResponseSchema(name="summary", description="The summary of the paper"),
-        ResponseSchema(name="comparison_with_previous_work", description="Comparison with prior work and how it informs the novelty/contribution"),
-        ResponseSchema(name="Novelty", description="Evaluation of the paper's novelty and originality"),
-        ResponseSchema(name="Significance", description="Evaluation of the paper's contribution and significance"),
-        ResponseSchema(name="Soundness", description="Evaluation of the paper's rigor and soundness"),
-        ResponseSchema(name="strengths", description="The strengths of the paper"),
-        ResponseSchema(name="weaknesses", description="The weaknesses of the paper"),
-        ResponseSchema(name="Evaluation", description="The overall evaluation of the paper given the above analysis"),
-        ResponseSchema(name="Suggestion", description="Constructive suggestions for how the authors could improve the paper"),
-
+        ResponseSchema(name="summary", description="A concise paragraph summarizing the paper"),
+        ResponseSchema(name="comparison_with_previous_work", description="List of exactly 5 comparisons with prior work (title-prefixed, two sentences each)"),
+        ResponseSchema(name="Novelty", description="List of exactly 4 balanced novelty assessments"),
+        ResponseSchema(name="Significance", description="List of exactly 4 balanced significance assessments"),
+        ResponseSchema(name="Soundness", description="List of exactly 4 balanced soundness assessments"),
+        ResponseSchema(name="strengths", description="List of exactly 4 strengths of the paper"),
+        ResponseSchema(name="weaknesses", description="List of exactly 4 weaknesses of the paper"),
+        ResponseSchema(name="Suggestion", description="List of exactly 4 actionable suggestions for improvement"),
     ]
     output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
     format_instructions = output_parser.get_format_instructions()
-    system_message = SystemMessage(content="""You are a professional idea evaluator with expertise in machine learning.
-    Your task is to evaluate a given target academic idea step by step, with a focus on novelty, significance and contribution.
-    You will be given:  
+    system_message = SystemMessage(content="""You are a professional idea advisor with expertise in machine learning.
+    Your task is to advise on a given target academic idea step by step, with a focus on novelty, contribution and soundness.
+    You will be given:
     1. The idea's title, abstract, claimed contribution and section summaries.
     2. A set of relevant prior works, each with abstract, contribution statements, method descriptions and experimental setups.
-	**Review Guidelines**
-    Read the idea: It's important to carefully read through the given content, and to look up any related work and citations that will help you comprehensively evaluate it. Be sure to give yourself sufficient time for this step.
+	**Advising Guidelines**
+    Read the given idea's content: It's important to carefully read through the given content, and to look up any related work and citations that will help you comprehensively advise on it. Be sure to give yourself sufficient time for this step.
     **Evaluation Criteria**
-    1. Motivation / Objective: What is the goal of the idea? Is it to better address a known application or problem, draw attention to a new application or problem, or to introduce and/or explain a new theoretical finding? A combination of these? Different objectives will require different considerations as to potential value and impact. Is the approach well motivated, including being well-placed in the literature?
+    1. Motivation / Objective: What is the goal of the paper? Is it to better address a known application or problem, draw attention to a new application or problem, or to introduce and/or explain a new theoretical finding? A combination of these? Different objectives will require different considerations as to potential value and impact. Is the approach well motivated, including being well-placed in the literature?
     2. Novelty & Originality: Are the tasks or methods new? Is the work a novel combination of well-known techniques? (This can be valuable!) Is it clear how this work differs from previous contributions?
     3. Significance & Contribution: Are the questions being asked important? Does the submission address a difficult task in a better way than previous work? Would researchers or practitioners likely adopt or build on these ideas?
     4. Soundness: Can the proposed method and experiment setup properly substantiate the claimed contributions? Will the claims be well supported under the proposed experiment setup? Are the methods used appropriate? Is this a complete piece of work or work in progress?
     **Related-Works Usage**
     1. **Abstract&Contribution**: frame the problem, scope, and high‑level "what" and "why." Used for evaluating significance and novelty.
-    2. **Method**: describe "how" (algorithms, architectures and theoretical derivations). Ssed for checking whether the proposed method is novel or internally consistent, well‑justified, and mathematically rigorous. 
-    3. **Experiment setup**: specify experiment design, datasets, baselines, metrics. Used to evaluate whether this work's experiment is appropriately designed and whether the experiment is comprehensive enough to support the claims. This content may also contain expected results.  
+    2. **Method**: describe "how" (algorithms, architectures and theoretical derivations). Ssed for checking whether the proposed method is novel or internally consistent, well‑justified, and mathematically rigorous.
+    3. **Experiment setup**: specify experiment design, datasets, baselines, metrics. Used to evaluate whether this work's experiment is appropriately designed and whether the experiment is comprehensive enough to support the claims. This content may also contain expected results.
+    **Scope of Available Information (IMPORTANT)**
+    You are ONLY given the paper's high-level SUMMARY — i.e., the title, abstract, claimed contribution, and short section summaries. You do NOT have access to the full paper, so you CANNOT see:
+    - concrete algorithmic details, pseudocode, equations, proofs, or implementation specifics of the proposed method;
+    - concrete experimental details such as exact datasets, hyperparameters, training protocols, baseline configurations, ablation studies, numerical results, tables, or figures.
+    Therefore, you MUST NOT fabricate or critique such unseen details.
     **Criticality**
-    Noting the idea will become a paper submitted to top conferences with acceptance rate of 30%, you should be more critical. Feel free to give negative evaluation if the idea's quality is poor.
-    For empirical works, there is no need to contain theoretical analysis. For theoretical works, there is no need to contain experimental. Do not give negative evaluation for the two cases.
-    **Output Format**  
+    Noting the idea will become a paper submitted to top conferences with acceptance rate of 30%, you should be more critical. Feel free to give negative assessments if the idea's quality is poor.
+    For empirical works, there is no need to contain theoretical analysis. For theoretical works, there is no need to contain experimental. Do not give negative assessments for the two cases.
+    **Output Format**
     Provide a structured evaluation **strictly in valid JSON format**. Include both an overall evaluation and constructive suggestions for improvement. Do not add explanations, extra text, or Markdown formatting.
-    When mentioning a related work, please use the title of the related work.
+    When mentioning a related work, please use the title of the related work (no URLs).
     """)
     
     for i in range(args.start_idx, args.end_idx): 

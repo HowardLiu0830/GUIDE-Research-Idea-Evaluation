@@ -16,51 +16,57 @@ python database/db_loader.py --action download
 
 This downloads 4 databases (~500MB total):
 - **abstract_db** - Paper abstracts for similarity search
-- **contribution_db** - Paper contributions for similarity search  
+- **contribution_db** - Paper contributions for similarity search
 - **method_db** - Paper methods for similarity search
 - **experiment_db** - Paper experiments for similarity search
 
 **Note**: You need an OpenAI API key to use these databases. The download step just fetches the data - the API key is used later for embeddings.
 
 ### 3. Configure API Keys
-Edit the API keys in `run_pipeline.py`:
-```python
-# Lines 30-31: Replace with your actual OpenAI API key
-'--openai_key', 'your-actual-openai-key-here',
-
-# Lines 48-50: Replace with your actual API keys
-'--openai_key', 'your-actual-openai-key-here',
-'--google_key', 'your-actual-google-key-here',
-'--deepinfra_key', 'your-actual-deepinfra-key-here',
-```
-
-### 3. Run the System
+Edit the OpenAI API key at the top of `run_pipeline.sh`:
 ```bash
-python run_pipeline.py
+OPENAI_KEY="your-actual-openai-key-here"
 ```
+
+The pipeline now relies on OpenAI only (used for both embeddings and the advising LLM), so no other provider keys are needed.
+
+### 4. Run the System
+```bash
+bash run_pipeline.sh
+```
+A timestamped log will be written to `logs/run_pipeline_<timestamp>.log`.
 
 
 
 ## 🔧 Configuration Options
 
 ### Available AI Models
-- **OpenAI**: `gpt-4o`, `gpt-4o-mini`
-- **Google**: `gemini-2.0-flash-exp`, `gemini-2.0-flash-thinking-exp`  
-- **DeepInfra**: `deepseek-ai/DeepSeek-V3`, `deepseek-ai/DeepSeek-R1`
-- **More**: See `review_gen.py --help` for full list
+Only OpenAI GPT models are supported:
+- `gpt-5.4-mini` (default)
+- `gpt-5.4-nano`
+- `gpt-4o`
+- `gpt-4o-mini`
+- `gpt-4.1-nano`
+
+See `python advising_gen.py --help` for the canonical list.
 
 ### Processing Range
-Edit `run_pipeline.py` to change which papers to process:
-```python
-'--start_idx', '0',    # Start from paper 0
-'--end_idx', '2',      # Process up to paper 2 (demo setting)
+Edit `run_pipeline.sh` to change which papers to process:
+```bash
+START_IDX=0    # Start from paper 0
+END_IDX=2      # Process up to paper 2 (demo setting)
 ```
 
 ### Paper Sections to Analyze
-```python
-'--paper_sections', 'introduction,method,experiments',
-'--search_types', 'abstract,contribution,method,experiments'
+```bash
+PAPER_SECTIONS="introduction,method,experiments"
+SEARCH_TYPES="abstract,contribution,method,experiments"
 ```
+
+### Related-Paper Retrieval
+`prompt_gen.py` retrieves related work from the four Chroma databases, then applies two filters:
+- **Year filter** (`--year_threshold`, default `2023`) — only keeps papers with `year <= threshold` in the DB metadata.
+- **ROUGE-L dedup** (`--rouge_threshold`, default `0.5`) — drops retrieved papers whose abstract is too similar to the target abstract (helps avoid the target paper itself / near-duplicates being returned as "prior work").
 
 ## 📁 Input Data Format
 
@@ -73,7 +79,7 @@ Your `data/sample.json` should contain papers like:
     "contribution": "Main contributions...",
     "summary": {
       "introduction": "Introduction summary...",
-      "method": "Method summary...", 
+      "method": "Method summary...",
       "experiments": "Experiment summary..."
     }
   }
@@ -84,9 +90,17 @@ Your `data/sample.json` should contain papers like:
 
 The system generates:
 - **`prompts.jsonl`** - Generated prompts for each paper
-- **`reviews.json`** - Full structured reviews with metadata  
-- **`reviews_clean.json`** - Clean format for easy reading
+- **`advising.json`** - Full structured advising output with metadata
+- **`advising_clean.json`** - Clean format for easy reading
 - **`token_usage.json`** - API usage statistics (if `--track_tokens` enabled)
+
+### Advising Schema
+Each entry in `advising.json` is a JSON object with the following fields:
+- `summary` *(string)* — concise paragraph summarizing the paper
+- `comparison_with_previous_work` *(list of exactly 5 strings)* — each item references a prior work by its **paper title** and contains exactly two sentences (what the prior work does + how it relates to the target paper). No URLs.
+- `Novelty`, `Significance`, `Soundness`, `strengths`, `weaknesses`, `Suggestion` *(each a list of exactly 4 strings)* — balanced, multi-sentence assessments
+
+The legacy single-string `Evaluation` field has been removed.
 
 ---
 
@@ -102,21 +116,25 @@ python prompt_gen.py \
   --output_path prompts.jsonl \
   --num_related 3 \
   --start_idx 0 \
-  --end_idx 10
+  --end_idx 10 \
+  --year_threshold 2023 \
+  --rouge_threshold 0.5 \
+  --paper_sections introduction,method,experiments \
+  --search_types abstract,contribution,method,experiments
 ```
 
-### Generate Reviews Only  
+### Generate Advising Only
 ```bash
-python review_gen.py \
+python advising_gen.py \
   --openai_key your_key \
-  --google_key your_key \
   --paper_path data/sample.json \
-  --output_path reviews.json \
-  --output_path_clean reviews_clean.json \
+  --output_path advising.json \
+  --output_path_clean advising_clean.json \
   --prompt_path prompts.jsonl \
-  --model gemini-2.0-flash-exp \
+  --model gpt-5.4-mini \
   --start_idx 0 \
-  --end_idx 10
+  --end_idx 10 \
+  --track_tokens
 ```
 
 ## BibTex
@@ -130,4 +148,3 @@ Please cite our work if you find the package useful 😄
   year={2025}
 }
 ```
-

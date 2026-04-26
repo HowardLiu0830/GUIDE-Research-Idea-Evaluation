@@ -4,10 +4,8 @@ import json
 from typing import Dict, List
 from langchain.schema import SystemMessage, HumanMessage
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
-from langchain_community.chat_models import ChatOpenAI
 import argparse
 
 # Import token counting utilities
@@ -113,10 +111,8 @@ class TokenUsageCallback(BaseCallbackHandler):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Generate paper reviews using LLM')
+    parser = argparse.ArgumentParser(description='Generate paper advising using LLM')
     parser.add_argument('--openai_key', required=True, help='OpenAI API key')
-    parser.add_argument('--google_key', required=True, help='Google API key')
-    parser.add_argument('--deepinfra_key', required=True, help='Deep Infra API key')
     parser.add_argument('--paper_path', required=True, help='Path to paper data JSON')
     parser.add_argument('--output_path', required=True, help='Path for output JSON')
     parser.add_argument('--output_path_clean', required=True, help='Path for output cleaned JSON')
@@ -129,21 +125,15 @@ def parse_arguments():
     parser.add_argument(
         '--model',
         required=False,
-        default='gemini-2.0-flash-exp',
+        default='gpt-5.4-mini',
         choices=[
+            'gpt-5.4-mini',
+            'gpt-5.4-nano',
             'gpt-4o-mini',
             'gpt-4o',
             'gpt-4.1-nano',
-            'o4-mini',
-            'o3-mini',
-            'gemini-2.0-flash-exp',
-            'gemini-2.0-flash-thinking-exp',
-            'deepseek-ai/DeepSeek-V3',
-            'deepseek-ai/DeepSeek-R1',
-            'Qwen/QwQ-32B',
-            'deepseek-r1-250120'
         ],
-        help='Select a AI model from the available options'
+        help='Select an OpenAI GPT model'
     )
     return parser.parse_args()
 
@@ -235,17 +225,22 @@ def process_paper(i, paper, prompt, llm, max_retries, track_tokens=False):
             json_content = extract_json_content(raw_output)
             cleaned_output = clean_json_output(json_content)
 
-            review_result = json.loads(cleaned_output)
-            review_result["raw_output"] = raw_output
-            review_result["title"] = paper["title"] 
+            advising_result = json.loads(cleaned_output)
+            advising_result["raw_output"] = raw_output
+            advising_result["title"] = paper["title"] 
             
-            # Apply clean_latex to string values only
-            for key in ["summary", "comparison_with_previous_work", "Novelty", "Significance", "Soundness", "strengths", "weaknesses", "Evaluation", "Suggestion"]:
-                if key in review_result and isinstance(review_result[key], str):
-                    review_result[key] = clean_latex(review_result[key])
+            # Apply clean_latex to string values, and to each string in a list
+            for key in ["summary", "comparison_with_previous_work", "Novelty", "Significance", "Soundness", "strengths", "weaknesses", "Suggestion"]:
+                if key not in advising_result:
+                    continue
+                v = advising_result[key]
+                if isinstance(v, str):
+                    advising_result[key] = clean_latex(v)
+                elif isinstance(v, list):
+                    advising_result[key] = [clean_latex(item) if isinstance(item, str) else item for item in v]
                     
-            print(f"✅ Review for '{paper['title']}' generated successfully.")
-            return i, review_result
+            print(f"✅ Advising for '{paper['title']}' generated successfully.")
+            return i, advising_result
         except json.JSONDecodeError:
             retry_count += 1
             print(f"❌ JSON Parse Error for '{paper['title']}' (Attempt {retry_count}/{max_retries})")
@@ -263,9 +258,7 @@ if __name__ == "__main__":
     paper_list = load_data(paper_path)
 
     openai_api_key = args.openai_key
-    google_api_key = args.google_key
-    deepinfra_api_key = args.deepinfra_key
-    
+
     # Initialize token tracker if enabled
     token_callback = None
     if args.track_tokens:
@@ -277,73 +270,18 @@ if __name__ == "__main__":
 
     selected_papers = paper_list[args.start_idx:args.end_idx]
     
-    # Initialize the appropriate LLM based on model selection
-    if args.model.startswith("gemini-"):
-        # For Google models, don't use token tracking callbacks
-        llm = ChatGoogleGenerativeAI(api_key=google_api_key, model=args.model, temperature=0.6)
-        if args.track_tokens:
-            print("Note: Token tracking not supported for Google models.")
-    elif args.model == "deepseek-ai/DeepSeek-V3":
-        # For other models, use callbacks if token tracking is enabled
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key=deepinfra_api_key, base_url="https://api.deepinfra.com/v1/openai", model="deepseek-ai/DeepSeek-V3", temperature=0.6, callbacks=callbacks)
-    elif args.model == "deepseek-r1-250120":
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key="6e598bcf-a6e2-4fb4-a616-17d82b7d2d43", base_url="https://ark.cn-beijing.volces.com/api/v3", model="deepseek-r1-250120", temperature=0.6, callbacks=callbacks)
-    elif args.model == "deepseek-ai/DeepSeek-R1":
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key=deepinfra_api_key, base_url="https://api.deepinfra.com/v1/openai", model="deepseek-ai/DeepSeek-R1", temperature=0.6, callbacks=callbacks)
-    elif args.model == "Qwen/QwQ-32B":
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key=deepinfra_api_key, base_url="https://api.deepinfra.com/v1/openai", model="Qwen/QwQ-32B", temperature=0.6, callbacks=callbacks)
-    elif args.model == "gpt-4o-mini":
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4o-mini", temperature=0.6, callbacks=callbacks)
-    elif args.model == "gpt-4o":
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4o", temperature=0.6, callbacks=callbacks)
-    elif args.model == "gpt-4.1-nano":
-        callbacks = [token_callback] if token_callback else None
-        llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4.1-nano", temperature=0.6, callbacks=callbacks)   
-    elif args.model == "o4-mini":
-        from langchain.chat_models.openai import ChatOpenAI
-        from typing import Any, Dict, Optional
-        
-        class CustomChatOpenAI(ChatOpenAI):
-            @property
-            def _default_params(self) -> Dict[str, Any]:
-                return {
-                    "model": self.model_name,
-                    "stream": self.streaming,
-                }
-        
-        callbacks = [token_callback] if token_callback else None
-        llm = CustomChatOpenAI(api_key=openai_api_key, model="o4-mini", callbacks=callbacks)
-    elif args.model == "o3-mini":
-        from langchain.chat_models.openai import ChatOpenAI
-        from typing import Any, Dict, Optional
-        
-        class CustomChatOpenAI(ChatOpenAI):
-            @property
-            def _default_params(self) -> Dict[str, Any]:
-                return {
-                    "model": self.model_name,
-                    "stream": self.streaming,
-                }
-        
-        callbacks = [token_callback] if token_callback else None
-        llm = CustomChatOpenAI(api_key=openai_api_key, model="o3-mini", callbacks=callbacks)
-        
+    callbacks = [token_callback] if token_callback else None
+    llm = ChatOpenAI(api_key=openai_api_key, model=args.model, temperature=0.6, callbacks=callbacks)
+
     response_schemas = [
-        ResponseSchema(name="summary", description="The summary of the paper"),
-        ResponseSchema(name="comparison_with_previous_work", description="Comparison with prior work and how it informs the novelty/contribution"),
-        ResponseSchema(name="Novelty", description="Evaluation of the paper's novelty and originality"),
-        ResponseSchema(name="Significance", description="Evaluation of the paper's contribution and significance"),
-        ResponseSchema(name="Soundness", description="Evaluation of the paper's rigor and soundness"),
-        ResponseSchema(name="strengths", description="The strengths of the paper"),
-        ResponseSchema(name="weaknesses", description="The weaknesses of the paper"),
-        ResponseSchema(name="Evaluation", description="The overall evaluation of the paper given the above analysis"),
-        ResponseSchema(name="Suggestion", description="Constructive suggestions for how the authors could improve the paper")
+        ResponseSchema(name="summary", description="A concise paragraph summarizing the paper"),
+        ResponseSchema(name="comparison_with_previous_work", description="List of exactly 5 comparisons with prior work (title-prefixed, two sentences each)"),
+        ResponseSchema(name="Novelty", description="List of exactly 4 balanced novelty assessments"),
+        ResponseSchema(name="Significance", description="List of exactly 4 balanced significance assessments"),
+        ResponseSchema(name="Soundness", description="List of exactly 4 balanced soundness assessments"),
+        ResponseSchema(name="strengths", description="List of exactly 4 strengths of the paper"),
+        ResponseSchema(name="weaknesses", description="List of exactly 4 weaknesses of the paper"),
+        ResponseSchema(name="Suggestion", description="List of exactly 4 actionable suggestions for improvement"),
     ]
     output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
     format_instructions = output_parser.get_format_instructions()
@@ -366,11 +304,11 @@ if __name__ == "__main__":
     # Process papers sequentially
     for i, paper in enumerate(selected_papers):
         print(f"Processing paper {i+1}/{len(selected_papers)}: {paper['title'][:50]}...")
-        paper_index, review_result = process_paper(i, paper, prompt_list[i], llm, max_retries, args.track_tokens)
+        paper_index, advising_result = process_paper(i, paper, prompt_list[i], llm, max_retries, args.track_tokens)
         
-        if review_result is not None:
-            results.append(review_result)
-            append_to_json_array(review_result, args.output_path)
+        if advising_result is not None:
+            results.append(advising_result)
+            append_to_json_array(advising_result, args.output_path)
                 
     # Write formatted output
     with open(args.output_path, 'r', encoding='utf-8') as f:
@@ -383,27 +321,32 @@ if __name__ == "__main__":
     
     with open(output_path, "r") as f:
         results = json.load(f)
-    print(f"Total reviews generated: {len(results)}")
+    print(f"Total advising generated: {len(results)}")
+    def _fmt(value):
+        if isinstance(value, list):
+            return "\n".join(f"  - {item}" for item in value)
+        return str(value) if value is not None else ""
+
     results_copy = results.copy()
     results_cleaned = []
-    for i, review in enumerate(results_copy):
+    for i, entry in enumerate(results_copy):
         title = selected_papers[i]["title"]
         abstract = selected_papers[i]["abstract"]
-        strengths_content = review.get('strengths', review.get('strong_points', 'No strengths provided'))
-        new_review = "\n".join([
-            f"Novelty: {review.get('Novelty', '')}",
-            f"Significance: {review.get('Significance', '')}",
-            f"Soundness: {review.get('Soundness', '')}",
-            f"Strengths: {strengths_content}",
-            f"Weaknesses: {review.get('weaknesses', review.get('weak_points', 'No weaknesses provided'))}",
-            f"Evaluation: {review.get('Evaluation', review.get('review', ''))}"
+        strengths_content = entry.get('strengths', entry.get('strong_points', 'No strengths provided'))
+        weaknesses_content = entry.get('weaknesses', entry.get('weak_points', 'No weaknesses provided'))
+        new_advising = "\n".join([
+            f"Novelty:\n{_fmt(entry.get('Novelty', ''))}",
+            f"Significance:\n{_fmt(entry.get('Significance', ''))}",
+            f"Soundness:\n{_fmt(entry.get('Soundness', ''))}",
+            f"Strengths:\n{_fmt(strengths_content)}",
+            f"Weaknesses:\n{_fmt(weaknesses_content)}",
         ])
-        abs_review = {
+        abs_advising = {
             "title": title,
             "abstract": abstract,
-            "review": new_review
+            "advising": new_advising
         }
-        results_cleaned.append(abs_review)
+        results_cleaned.append(abs_advising)
 
     output_path = args.output_path_clean
     with open(output_path, "w") as f:
