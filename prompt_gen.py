@@ -3,7 +3,6 @@ import re
 import json
 from typing import Dict, List
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 import argparse
@@ -270,19 +269,7 @@ if __name__ == "__main__":
     
 
     selected_papers = paper_list
-    
-    response_schemas = [
-        ResponseSchema(name="summary", description="A concise paragraph summarizing the paper"),
-        ResponseSchema(name="comparison_with_previous_work", description="List of exactly 5 comparisons with prior work (title-prefixed, two sentences each)"),
-        ResponseSchema(name="Novelty", description="List of exactly 4 balanced novelty assessments"),
-        ResponseSchema(name="Significance", description="List of exactly 4 balanced significance assessments"),
-        ResponseSchema(name="Soundness", description="List of exactly 4 balanced soundness assessments"),
-        ResponseSchema(name="strengths", description="List of exactly 4 strengths of the paper"),
-        ResponseSchema(name="weaknesses", description="List of exactly 4 weaknesses of the paper"),
-        ResponseSchema(name="Suggestion", description="List of exactly 4 actionable suggestions for improvement"),
-    ]
-    output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
-    format_instructions = output_parser.get_format_instructions()
+
     system_message = SystemMessage(content="""You are a professional idea advisor with expertise in machine learning.
     Your task is to advise on a given target academic idea step by step, with a focus on novelty, contribution and soundness.
     You will be given:

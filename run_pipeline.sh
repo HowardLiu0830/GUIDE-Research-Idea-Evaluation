@@ -5,10 +5,25 @@
 #
 set -euo pipefail
 
+# === Activate conda env GUIDE ===
+# Make the script self-contained: source conda and activate GUIDE so it
+# works regardless of whatever python is first on the caller's PATH.
+CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
+if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$CONDA_BASE/etc/profile.d/conda.sh"
+else
+    echo "❌ Could not find conda at $CONDA_BASE. Set CONDA_BASE to your conda install dir." >&2
+    exit 1
+fi
+conda activate GUIDE
+PYTHON="$CONDA_PREFIX/bin/python"
+echo "Using python: $PYTHON"
+
 # === Configuration ===
 OPENAI_KEY="your-actual-openai-key-here"
 
-PAPER_PATH="data/sample.json"
+PAPER_PATH="data/example.json"
 PROMPT_PATH="prompts.jsonl"
 ADVISING_PATH="advising.json"
 ADVISING_CLEAN_PATH="advising_clean.json"
@@ -46,7 +61,7 @@ echo
 
 # === Step 1: Generate prompts ===
 echo "🔍 Generating prompts..."
-python prompt_gen.py \
+"$PYTHON" prompt_gen.py \
     --openai_key "$OPENAI_KEY" \
     --paper_path "$PAPER_PATH" \
     --output_path "$PROMPT_PATH" \
@@ -62,7 +77,7 @@ echo
 
 # === Step 2: Generate advising ===
 echo "📝 Generating advising..."
-python advising_gen.py \
+"$PYTHON" advising_gen.py \
     --openai_key "$OPENAI_KEY" \
     --paper_path "$PAPER_PATH" \
     --output_path "$ADVISING_PATH" \

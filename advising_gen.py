@@ -2,15 +2,13 @@ import os
 import re
 import json
 from typing import Dict, List
-from langchain.schema import SystemMessage, HumanMessage
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
 import argparse
 
 # Import token counting utilities
 from langchain_community.callbacks import get_openai_callback
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler
 
 # Custom callback handler for token tracking
 class TokenUsageCallback(BaseCallbackHandler):
@@ -272,19 +270,6 @@ if __name__ == "__main__":
     
     callbacks = [token_callback] if token_callback else None
     llm = ChatOpenAI(api_key=openai_api_key, model=args.model, temperature=0.6, callbacks=callbacks)
-
-    response_schemas = [
-        ResponseSchema(name="summary", description="A concise paragraph summarizing the paper"),
-        ResponseSchema(name="comparison_with_previous_work", description="List of exactly 5 comparisons with prior work (title-prefixed, two sentences each)"),
-        ResponseSchema(name="Novelty", description="List of exactly 4 balanced novelty assessments"),
-        ResponseSchema(name="Significance", description="List of exactly 4 balanced significance assessments"),
-        ResponseSchema(name="Soundness", description="List of exactly 4 balanced soundness assessments"),
-        ResponseSchema(name="strengths", description="List of exactly 4 strengths of the paper"),
-        ResponseSchema(name="weaknesses", description="List of exactly 4 weaknesses of the paper"),
-        ResponseSchema(name="Suggestion", description="List of exactly 4 actionable suggestions for improvement"),
-    ]
-    output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
-    format_instructions = output_parser.get_format_instructions()
 
     results = []
     max_retries = 5

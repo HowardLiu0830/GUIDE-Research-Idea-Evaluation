@@ -3,4 +3,17 @@ database/contribution_db
 database/method_db
 database/experiment_db
 
+# Pipeline outputs
+prompts.jsonl
+advising.json
+advising_clean.json
+token_usage.json
+logs/
 
+# Python
+__pycache__/
+*.pyc
+
+# Editor / tooling
+.claude/
+.DS_Store
