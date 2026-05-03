@@ -1,5 +1,9 @@
 # GUIDE - Towards Scalable Advising for Research Ideas
 
+![Conference](https://img.shields.io/badge/ACL-2026-blue) [![Paper](https://img.shields.io/badge/arXiv-2507.08870-b31b1b.svg)](https://arxiv.org/abs/2507.08870) [![Demo](https://img.shields.io/badge/Demo-researchguide.work-brightgreen)](https://www.researchguide.work/)
+
+**Accepted at ACL 2026 Main Conference.**
+
 ## 🚀 Quick Start (4 Steps)
 
 ### 1. Setup Environment
